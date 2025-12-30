@@ -1,0 +1,373 @@
+name: Comprehensive Test Suite
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run performance tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+env:
+  NODE_VERSION: '18.x'
+  EXPO_CLI_VERSION: 'latest'
+
+jobs:
+  # Unit and Integration Tests
+  unit-integration-tests:
+    name: Unit & Integration Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: |
+        cd mobile-pdf-editor
+        npm ci
+        
+    - name: Run linting
+      run: |
+        cd mobile-pdf-editor
+        npm run lint
+        
+    - name: Run unit tests
+      run: |
+        cd mobile-pdf-editor
+        npm run test:unit -- --coverage --watchAll=false
+        
+    - name: Run integration tests
+      run: |
+        cd mobile-pdf-editor
+        npm run test:integration -- --watchAll=false
+        
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        file: mobile-pdf-editor/coverage/lcov.info
+        flags: unittests
+        name: codecov-umbrella
+        
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results-${{ matrix.node-version }}
+        path: |
+          mobile-pdf-editor/test-results/
+          mobile-pdf-editor/coverage/
+
+  # End-to-End Tests
+  e2e-tests:
+    name: End-to-End Tests
+    runs-on: ubuntu-latest
+    needs: unit-integration-tests
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: |
+        cd mobile-pdf-editor
+        npm ci
+        
+    - name: Run E2E tests
+      run: |
+        cd mobile-pdf-editor
+        npm run test:e2e -- --watchAll=false
+        
+    - name: Upload E2E test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: e2e-test-results
+        path: |
+          mobile-pdf-editor/test-results/
+          mobile-pdf-editor/screenshots/
+          mobile-pdf-editor/videos/
+
+  # Performance Tests
+  performance-tests:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    needs: unit-integration-tests
+    if: github.event_name == 'schedule' || contains(github.event.head_commit.message, '[performance]')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: |
+        cd mobile-pdf-editor
+        npm ci
+        
+    - name: Run performance tests
+      run: |
+        cd mobile-pdf-editor
+        npm run test:performance -- --watchAll=false
+      env:
+        PERFORMANCE_BASELINE: true
+        
+    - name: Upload performance results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: performance-test-results
+        path: |
+          mobile-pdf-editor/performance-report.json
+          mobile-pdf-editor/benchmark-results.json
+
+  # Cross-Platform Tests
+  cross-platform-tests:
+    name: Cross-Platform Tests
+    runs-on: ${{ matrix.os }}
+    needs: unit-integration-tests
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        platform: [ios, android]
+        exclude:
+          - os: ubuntu-latest
+            platform: ios
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: |
+        cd mobile-pdf-editor
+        npm ci
+        
+    - name: Setup iOS Simulator (macOS only)
+      if: matrix.platform == 'ios' && matrix.os == 'macos-latest'
+      run: |
+        xcrun simctl list devices
+        
+    - name: Setup Android Emulator (Linux only)
+      if: matrix.platform == 'android' && matrix.os == 'ubuntu-latest'
+      uses: reactivecircus/android-emulator-runner@v2
+      with:
+        api-level: 29
+        script: echo "Android emulator started"
+        
+    - name: Run cross-platform tests
+      run: |
+        cd mobile-pdf-editor
+        npm run test:cross-platform -- --watchAll=false
+      env:
+        PLATFORM: ${{ matrix.platform }}
+        
+    - name: Upload cross-platform test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: cross-platform-results-${{ matrix.platform }}-${{ matrix.os }}
+        path: mobile-pdf-editor/platform-compatibility-report.json
+
+  # Accessibility Tests
+  accessibility-tests:
+    name: Accessibility Tests
+    runs-on: ubuntu-latest
+    needs: unit-integration-tests
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: |
+        cd mobile-pdf-editor
+        npm ci
+        
+    - name: Run accessibility tests
+      run: |
+        cd mobile-pdf-editor
+        npm run test:accessibility -- --watchAll=false
+        
+    - name: Upload accessibility test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: accessibility-test-results
+        path: mobile-pdf-editor/accessibility-report.json
+
+  # Comprehensive Test Report
+  comprehensive-report:
+    name: Generate Comprehensive Report
+    runs-on: ubuntu-latest
+    needs: [unit-integration-tests, e2e-tests, performance-tests, cross-platform-tests, accessibility-tests]
+    if: always()
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: |
+        cd mobile-pdf-editor
+        npm ci
+        
+    - name: Download all test artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: mobile-pdf-editor/test-artifacts/
+        
+    - name: Generate comprehensive report
+      run: |
+        cd mobile-pdf-editor
+        npm run test:comprehensive
+        
+    - name: Upload comprehensive report
+      uses: actions/upload-artifact@v3
+      with:
+        name: comprehensive-test-report
+        path: |
+          mobile-pdf-editor/test-results.json
+          mobile-pdf-editor/test-results.html
+          mobile-pdf-editor/coverage-report.html
+          
+    - name: Comment PR with test results
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const path = 'mobile-pdf-editor/test-results.json';
+          
+          if (fs.existsSync(path)) {
+            const results = JSON.parse(fs.readFileSync(path, 'utf8'));
+            const comment = `
+            ## 📊 Test Results Summary
+            
+            - **Total Tests:** ${results.summary.total}
+            - **Passed:** ${results.summary.passed} ✅
+            - **Failed:** ${results.summary.failed} ❌
+            - **Skipped:** ${results.summary.skipped} ⏭️
+            - **Duration:** ${Math.round(results.summary.duration / 1000)}s
+            
+            ### Coverage
+            - **Statements:** ${results.coverage.statements}%
+            - **Branches:** ${results.coverage.branches}%
+            - **Functions:** ${results.coverage.functions}%
+            - **Lines:** ${results.coverage.lines}%
+            
+            ${results.summary.failed > 0 ? '⚠️ Some tests failed. Please check the detailed report.' : '🎉 All tests passed!'}
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+          }
+
+  # Security and Quality Checks
+  security-quality:
+    name: Security & Quality Checks
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: |
+        cd mobile-pdf-editor
+        npm ci
+        
+    - name: Run security audit
+      run: |
+        cd mobile-pdf-editor
+        npm audit --audit-level moderate
+        
+    - name: Run dependency check
+      run: |
+        cd mobile-pdf-editor
+        npx license-checker --summary
+        
+    - name: Check bundle size
+      run: |
+        cd mobile-pdf-editor
+        npx bundlesize
+        
+    - name: TypeScript type check
+      run: |
+        cd mobile-pdf-editor
+        npx tsc --noEmit
+
+  # Notification
+  notify:
+    name: Notify Results
+    runs-on: ubuntu-latest
+    needs: [comprehensive-report, security-quality]
+    if: always() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    
+    steps:
+    - name: Notify Slack on success
+      if: needs.comprehensive-report.result == 'success' && needs.security-quality.result == 'success'
+      uses: 8398a7/action-slack@v3
+      with:
+        status: success
+        text: '✅ All tests passed successfully!'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        
+    - name: Notify Slack on failure
+      if: needs.comprehensive-report.result == 'failure' || needs.security-quality.result == 'failure'
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        text: '❌ Some tests failed. Please check the results.'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

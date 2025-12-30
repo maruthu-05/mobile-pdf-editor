@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "mobile-pdf-editor",
+    "name": "Mobile PDF Editor",
     "slug": "mobile-pdf-editor",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -8,10 +8,34 @@
     "scheme": "mobilepdfeditor",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "description": "A mobile PDF editor for merging, splitting, and editing PDF documents",
+    "privacy": "public",
+    "platforms": ["ios", "android"],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.mobilepdfeditor.app",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSDocumentsFolderUsageDescription": "This app needs access to documents to manage PDF files",
+        "NSPhotoLibraryUsageDescription": "This app needs access to photo library to import PDF files",
+        "UIFileSharingEnabled": true,
+        "LSSupportsOpeningDocumentsInPlace": true,
+        "UTImportedTypeDeclarations": [
+          {
+            "UTTypeIdentifier": "com.adobe.pdf",
+            "UTTypeDescription": "PDF Document",
+            "UTTypeConformsTo": ["public.data"],
+            "UTTypeTagSpecification": {
+              "public.filename-extension": ["pdf"],
+              "public.mime-type": ["application/pdf"]
+            }
+          }
+        ]
+      }
     },
     "android": {
+      "package": "com.mobilepdfeditor.app",
+      "versionCode": 1,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -19,7 +43,21 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "MANAGE_DOCUMENTS"
+      ],
+      "intentFilters": [
+        {
+          "action": "android.intent.action.VIEW",
+          "category": ["android.intent.category.DEFAULT"],
+          "data": {
+            "mimeType": "application/pdf"
+          }
+        }
+      ]
     },
     "web": {
       "output": "static",
@@ -27,6 +65,9 @@
     },
     "plugins": [
       "expo-router",
+      "expo-document-picker",
+      "expo-file-system",
+      "expo-sharing",
       [
         "expo-splash-screen",
         {
