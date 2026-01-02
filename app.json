@@ -10,7 +10,7 @@
     "newArchEnabled": true,
     "description": "A mobile PDF editor for merging, splitting, and editing PDF documents",
     "privacy": "public",
-    "platforms": ["ios", "android"],
+    "platforms": ["ios", "android", "web"],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.mobilepdfeditor.app",
@@ -64,10 +64,10 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      "expo-dev-client",
       "expo-router",
       "expo-document-picker",
       "expo-file-system",
-      "expo-sharing",
       [
         "expo-splash-screen",
         {

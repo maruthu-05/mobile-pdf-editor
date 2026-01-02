@@ -53,12 +53,14 @@ const mockFileSystem = {
 
 jest.mock('expo-file-system', () => mockFileSystem);
 
-// Mock react-native-pdf-lib
-jest.mock('react-native-pdf-lib', () => ({
+// Mock pdf-lib
+jest.mock('pdf-lib', () => ({
   PDFDocument: {
     create: jest.fn(),
     load: jest.fn(),
   },
+  rgb: jest.fn(),
+  degrees: jest.fn(),
 }));
 
 // Mock React Native Alert

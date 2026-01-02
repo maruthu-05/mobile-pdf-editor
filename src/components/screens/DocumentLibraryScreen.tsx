@@ -14,21 +14,31 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system';
 import { Ionicons } from '@expo/vector-icons';
-import { DocumentMetadata } from '../../types';
-import { DocumentLibrary } from '../../modules/document-library';
-import { FileManager } from '../../modules/file-manager';
+import { DocumentPickerUtils } from '../../utils/DocumentPickerUtils';
+import { DebugUtils } from '../../utils/DebugUtils';
 
 const { width } = Dimensions.get('window');
 const ITEM_WIDTH = (width - 60) / 2; // 2 columns with padding
 
+// Simple document metadata interface
+interface SimpleDocumentMetadata {
+  id: string;
+  fileName: string;
+  filePath: string;
+  fileSize: number;
+  pageCount: number;
+  createdAt: Date;
+  modifiedAt: Date;
+}
+
 interface DocumentItemProps {
-  document: DocumentMetadata;
-  onPress: (document: DocumentMetadata) => void;
-  onLongPress: (document: DocumentMetadata) => void;
+  document: SimpleDocumentMetadata;
+  onPress: (document: SimpleDocumentMetadata) => void;
+  onLongPress: (document: SimpleDocumentMetadata) => void;
 }
 
 const DocumentItem: React.FC<DocumentItemProps> = ({ document, onPress, onLongPress }) => {
@@ -74,25 +84,23 @@ const DocumentItem: React.FC<DocumentItemProps> = ({ document, onPress, onLongPr
 
 export const DocumentLibraryScreen: React.FC = () => {
   const router = useRouter();
-  const [documents, setDocuments] = useState<DocumentMetadata[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [documents, setDocuments] = useState<SimpleDocumentMetadata[]>([]);
+  const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [filteredDocuments, setFilteredDocuments] = useState<DocumentMetadata[]>([]);
-  const [selectedDocument, setSelectedDocument] = useState<DocumentMetadata | null>(null);
+  const [filteredDocuments, setFilteredDocuments] = useState<SimpleDocumentMetadata[]>([]);
+  const [selectedDocument, setSelectedDocument] = useState<SimpleDocumentMetadata | null>(null);
   const [showContextMenu, setShowContextMenu] = useState(false);
   const [showRenameModal, setShowRenameModal] = useState(false);
   const [newFileName, setNewFileName] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
-  const documentLibrary = new DocumentLibrary();
-  const fileManager = new FileManager();
-
   const loadDocuments = useCallback(async () => {
     try {
-      const docs = await documentLibrary.getDocuments('modifiedAt', 'desc');
-      setDocuments(docs);
-      setFilteredDocuments(docs);
+      setLoading(true);
+      // For now, just set empty array - this will be enhanced later
+      setDocuments([]);
+      setFilteredDocuments([]);
     } catch (error) {
       console.error('Error loading documents:', error);
       Alert.alert('Error', 'Failed to load documents');
@@ -119,61 +127,150 @@ export const DocumentLibraryScreen: React.FC = () => {
 
   const handleUpload = async () => {
     try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: 'application/pdf',
-        copyToCacheDirectory: true,
+      // Show loading state immediately
+      setLoading(true);
+      
+      console.log('Starting document picker...');
+
+      // Check if document picker is available
+      if (!DocumentPickerUtils.isAvailable()) {
+        DocumentPickerUtils.showErrorAlert('File picker is not available on this platform.');
+        return;
+      }
+
+      // Use the enhanced document picker utility
+      const result = await DocumentPickerUtils.pickPDFDocument();
+      
+      console.log('Document picker result:', result);
+
+      if (!result.success) {
+        if (result.error && !result.error.includes('canceled')) {
+          DocumentPickerUtils.showErrorAlert(result.error);
+        }
+        return;
+      }
+
+      // Validate that we have a valid result
+      if (!result.uri) {
+        Alert.alert('Error', 'Invalid file selected. Please try again.');
+        return;
+      }
+
+      console.log('Selected file:', {
+        name: result.name,
+        uri: result.uri,
+        size: result.size,
+        mimeType: result.mimeType
       });
 
-      if (!result.canceled && result.assets[0]) {
-        const asset = result.assets[0];
-        setLoading(true);
+      // Get documents directory
+      const documentsDir = FileSystem.documentDirectory;
+      if (!documentsDir) {
+        throw new Error('Documents directory not available');
+      }
 
-        // Copy file to app documents directory
-        const documentsDir = await fileManager.getDocumentsDirectory();
-        const fileName = asset.name || `document_${Date.now()}.pdf`;
-        const filePath = `${documentsDir}/${fileName}`;
+      // Create a unique filename to avoid conflicts
+      const timestamp = Date.now();
+      const fileName = result.name || `document_${timestamp}.pdf`;
+      const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+      const uniqueFileName = `${timestamp}_${sanitizedFileName}`;
+      const filePath = `${documentsDir}${uniqueFileName}`;
+      
+      console.log('Target file path:', filePath);
 
-        // Read file and save to documents directory
-        const fileData = await fileManager.readFileAsBuffer(asset.uri);
-        const savedPath = await fileManager.saveFile(fileData, fileName);
+      try {
+        // First, check if the source file exists and is readable
+        const sourceInfo = await FileSystem.getInfoAsync(result.uri);
+        console.log('Source file info:', sourceInfo);
+        
+        if (!sourceInfo.exists) {
+          throw new Error('Selected file is not accessible');
+        }
 
-        // Get file info
-        const fileInfo = await fileManager.getFileInfo(savedPath);
+        // Copy file to documents directory
+        console.log('Copying file from', result.uri, 'to', filePath);
+        await FileSystem.copyAsync({
+          from: result.uri,
+          to: filePath
+        });
 
+        // Verify the copy was successful
+        const copiedFileInfo = await FileSystem.getInfoAsync(filePath);
+        console.log('Copied file info:', copiedFileInfo);
+        
+        if (!copiedFileInfo.exists) {
+          throw new Error('Failed to copy file to app storage');
+        }
+
+        // Get file size (try multiple approaches for compatibility)
+        let fileSize = 0;
+        if (result.size) {
+          fileSize = result.size;
+        } else if (copiedFileInfo.size) {
+          fileSize = copiedFileInfo.size;
+        } else {
+          // Fallback: read file to get size
+          try {
+            const fileContent = await FileSystem.readAsStringAsync(filePath, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            fileSize = Math.round((fileContent.length * 3) / 4); // Approximate size from base64
+          } catch {
+            fileSize = 0; // Default if we can't determine size
+          }
+        }
+        
+        console.log('Final file size:', fileSize);
+        
         // Create document metadata
-        const metadata: DocumentMetadata = {
-          id: `doc_${Date.now()}`,
-          fileName: fileName,
-          filePath: savedPath,
-          fileSize: fileInfo.fileSize,
-          pageCount: 1, // TODO: Get actual page count from PDF
+        const metadata: SimpleDocumentMetadata = {
+          id: `doc_${timestamp}`,
+          fileName: uniqueFileName,
+          filePath: filePath,
+          fileSize: fileSize,
+          pageCount: 1, // Default to 1 page for now - this could be enhanced with PDF parsing
           createdAt: new Date(),
           modifiedAt: new Date(),
         };
 
-        // Add to document library
-        await documentLibrary.addDocument(savedPath, metadata);
+        console.log('Created metadata:', metadata);
 
-        // Refresh documents list
-        await loadDocuments();
+        // Add to documents list
+        setDocuments(prev => [metadata, ...prev]);
 
+        // Provide haptic feedback and success message
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert('Success', 'Document uploaded successfully');
+        Alert.alert('Success', `Document "${fileName}" has been imported successfully!`);
+        
+      } catch (copyError) {
+        console.error('Error copying file:', copyError);
+        
+        // Clean up any partial file
+        try {
+          await FileSystem.deleteAsync(filePath, { idempotent: true });
+        } catch {
+          // Ignore cleanup errors
+        }
+        
+        Alert.alert(
+          'Import Error', 
+          'Failed to import the document. Please ensure the file is not corrupted and try again.'
+        );
       }
     } catch (error) {
-      console.error('Error uploading document:', error);
-      Alert.alert('Error', 'Failed to upload document');
+      console.error('Error in document upload:', error);
+      Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDocumentPress = (document: DocumentMetadata) => {
+  const handleDocumentPress = (document: SimpleDocumentMetadata) => {
     // Navigate to PDF viewer with document ID
     router.push(`/pdf-viewer/${document.id}`);
   };
 
-  const handleDocumentLongPress = (document: DocumentMetadata) => {
+  const handleDocumentLongPress = (document: SimpleDocumentMetadata) => {
     setSelectedDocument(document);
     setShowContextMenu(true);
   };
@@ -191,15 +288,22 @@ export const DocumentLibraryScreen: React.FC = () => {
 
     try {
       const newFullName = `${newFileName.trim()}.pdf`;
-      const newPath = await fileManager.renameFile(selectedDocument.filePath, newFullName);
+      const directory = selectedDocument.filePath.substring(0, selectedDocument.filePath.lastIndexOf('/') + 1);
+      const newPath = `${directory}${newFullName}`;
 
-      await documentLibrary.updateDocument(selectedDocument.id, {
-        fileName: newFullName,
-        filePath: newPath,
-        modifiedAt: new Date(),
+      // Rename file
+      await FileSystem.moveAsync({
+        from: selectedDocument.filePath,
+        to: newPath
       });
 
-      await loadDocuments();
+      // Update documents list
+      setDocuments(prev => prev.map(doc => 
+        doc.id === selectedDocument.id 
+          ? { ...doc, fileName: newFullName, filePath: newPath, modifiedAt: new Date() }
+          : doc
+      ));
+
       setShowRenameModal(false);
       setNewFileName('');
       setSelectedDocument(null);
@@ -224,9 +328,8 @@ export const DocumentLibraryScreen: React.FC = () => {
           style: 'destructive',
           onPress: async () => {
             try {
-              await fileManager.deleteFile(selectedDocument.filePath);
-              await documentLibrary.removeDocument(selectedDocument.id);
-              await loadDocuments();
+              await FileSystem.deleteAsync(selectedDocument.filePath);
+              setDocuments(prev => prev.filter(doc => doc.id !== selectedDocument.id));
               setShowContextMenu(false);
               setSelectedDocument(null);
 
@@ -269,7 +372,7 @@ export const DocumentLibraryScreen: React.FC = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
-  const renderDocument = ({ item }: { item: DocumentMetadata }) => {
+  const renderDocument = ({ item }: { item: SimpleDocumentMetadata }) => {
     if (viewMode === 'list') {
       return (
         <TouchableOpacity
@@ -321,6 +424,14 @@ export const DocumentLibraryScreen: React.FC = () => {
         <Text style={styles.title}>Document Library</Text>
         <View style={styles.headerActions}>
           <TouchableOpacity 
+            onPress={() => DebugUtils.showQuickDebugInfo()} 
+            onLongPress={() => router.push('/debug/document-picker')}
+            style={styles.headerButton}
+            testID="debug-button"
+          >
+            <Ionicons name="bug" size={24} color="#007AFF" />
+          </TouchableOpacity>
+          <TouchableOpacity 
             onPress={() => router.push('/merge')} 
             style={styles.headerButton}
             testID="merge-button"
@@ -340,10 +451,15 @@ export const DocumentLibraryScreen: React.FC = () => {
           </TouchableOpacity>
           <TouchableOpacity 
             onPress={handleUpload} 
-            style={styles.headerButton}
+            style={[styles.headerButton, loading && styles.headerButtonDisabled]}
             testID="upload-button"
+            disabled={loading}
           >
-            <Ionicons name="add" size={24} color="#007AFF" />
+            {loading ? (
+              <ActivityIndicator size="small" color="#007AFF" />
+            ) : (
+              <Ionicons name="add" size={24} color="#007AFF" />
+            )}
           </TouchableOpacity>
         </View>
       </View>
@@ -366,8 +482,18 @@ export const DocumentLibraryScreen: React.FC = () => {
           <Ionicons name="document-text-outline" size={64} color="#ccc" />
           <Text style={styles.emptyTitle}>No Documents</Text>
           <Text style={styles.emptySubtitle}>
-            {searchQuery ? 'No documents match your search' : 'Tap + to upload your first PDF'}
+            {searchQuery ? 'No documents match your search' : 'Import PDF files from your device storage'}
           </Text>
+          {!searchQuery && (
+            <TouchableOpacity 
+              style={styles.primaryUploadButton} 
+              onPress={handleUpload}
+              testID="primary-upload-button"
+            >
+              <Ionicons name="cloud-upload-outline" size={24} color="#fff" />
+              <Text style={styles.primaryUploadButtonText}>Select PDF Files</Text>
+            </TouchableOpacity>
+          )}
         </View>
       ) : (
         <FlatList
@@ -494,6 +620,9 @@ const styles = StyleSheet.create({
     marginLeft: 16,
     padding: 8,
   },
+  headerButtonDisabled: {
+    opacity: 0.5,
+  },
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -607,6 +736,26 @@ const styles = StyleSheet.create({
     color: '#999',
     textAlign: 'center',
     lineHeight: 24,
+    marginBottom: 32,
+  },
+  primaryUploadButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#007AFF',
+    paddingHorizontal: 24,
+    paddingVertical: 16,
+    borderRadius: 12,
+    shadowColor: '#007AFF',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  primaryUploadButtonText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#fff',
+    marginLeft: 8,
   },
   modalOverlay: {
     flex: 1,
