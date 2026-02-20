@@ -1,7 +1,8 @@
 import { Platform, Alert } from 'react-native';
 import Constants from 'expo-constants';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
+import { ExpoGoFilePickerFallback } from './ExpoGoFilePickerFallback';
 
 export interface SystemInfo {
   platform: string;
@@ -10,6 +11,8 @@ export interface SystemInfo {
   appVersion: string;
   deviceName?: string;
   isDevice: boolean;
+  isExpoGo: boolean;
+  appOwnership?: string;
   documentDirectory?: string;
   cacheDirectory?: string;
   documentPickerAvailable: boolean;
@@ -32,6 +35,8 @@ export class DebugUtils {
       appVersion: Constants.manifest?.version || '1.0.0',
       deviceName: Constants.deviceName,
       isDevice: Constants.isDevice,
+      isExpoGo: ExpoGoFilePickerFallback.isExpoGo(),
+      appOwnership: Constants.appOwnership,
       documentDirectory: FileSystem.documentDirectory,
       cacheDirectory: FileSystem.cacheDirectory,
       documentPickerAvailable: false,
@@ -216,6 +221,10 @@ export class DebugUtils {
         issues.push('Running on simulator/emulator (limited functionality)');
       }
       
+      if (systemInfo.isExpoGo) {
+        issues.push('Running in Expo Go (limited file picker functionality)');
+      }
+      
       if (!systemInfo.documentPickerAvailable) {
         issues.push('Document picker not available');
       }
@@ -243,7 +252,16 @@ export class DebugUtils {
       } else {
         message += '⚠️ Issues found:\n\n';
         message += issues.map(issue => `• ${issue}`).join('\n');
-        message += '\n\nCheck console logs for detailed information.';
+        
+        if (systemInfo.isExpoGo) {
+          message += '\n\n💡 Expo Go Limitation:\n';
+          message += 'Document picker has limited functionality in Expo Go.\n';
+          message += 'For full functionality, create a development build:\n';
+          message += '• npx expo run:android (or run:ios)\n';
+          message += '• Or use the "Create Sample PDF" option for testing';
+        } else {
+          message += '\n\nCheck console logs for detailed information.';
+        }
       }
 
       Alert.alert('File Picker Diagnostics', message, [

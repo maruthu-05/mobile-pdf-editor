@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { PDFEngine as IPDFEngine } from './interfaces';
 import { PDFDocument as IPDFDocument, PageRange, TextEdit, Annotation, ImageData } from '../../types';
 

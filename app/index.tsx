@@ -1,5 +1,3 @@
-import { DocumentLibraryScreen } from '@/src/components/screens';
+import { HomeScreen } from '@/src/components/screens';
 
-export default function HomeScreen() {
-  return <DocumentLibraryScreen />;
-}
+export default HomeScreen;

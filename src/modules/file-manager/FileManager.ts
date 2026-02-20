@@ -1,5 +1,5 @@
 // File Manager implementation using Expo FileSystem
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { FileManager as IFileManager } from './interfaces';
 import { FileMetadata } from '../../types';
 import { ErrorFactory, FileSystemError } from '../../types/errors';

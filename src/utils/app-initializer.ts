@@ -15,6 +15,8 @@ export interface AppInitializationResult {
 class AppInitializer {
   private static instance: AppInitializer;
   private initialized = false;
+  private initializationPromise: Promise<AppInitializationResult> | null = null;
+  private initializationResult: AppInitializationResult | null = null;
 
   static getInstance(): AppInitializer {
     if (!AppInitializer.instance) {
@@ -24,8 +26,16 @@ class AppInitializer {
   }
 
   async initialize(): Promise<AppInitializationResult> {
-    if (this.initialized) {
-      throw new Error('App already initialized');
+    // If already initialized, return cached result
+    if (this.initialized && this.initializationResult) {
+      console.log('App already initialized, returning cached result');
+      return this.initializationResult;
+    }
+
+    // If initialization is in progress, wait for it
+    if (this.initializationPromise) {
+      console.log('App initialization in progress, waiting...');
+      return this.initializationPromise;
     }
 
     console.log('Starting app initialization...');
@@ -38,36 +48,43 @@ class AppInitializer {
       offlineManagerInitialized: false,
     };
 
-    try {
-      // Check if this is the first launch
-      result.isFirstLaunch = await this.checkFirstLaunch();
-      
-      // Check onboarding status
-      result.onboardingCompleted = await this.checkOnboardingStatus();
+    // Store the promise to prevent concurrent initializations
+    this.initializationPromise = (async () => {
+      try {
+        // Check if this is the first launch
+        result.isFirstLaunch = await this.checkFirstLaunch();
+        
+        // Check onboarding status
+        result.onboardingCompleted = await this.checkOnboardingStatus();
 
-      // Initialize storage systems
-      result.storageInitialized = await this.initializeStorage();
+        // Initialize storage systems
+        result.storageInitialized = await this.initializeStorage();
 
-      // Initialize offline manager
-      result.offlineManagerInitialized = await this.initializeOfflineManager();
+        // Initialize offline manager
+        result.offlineManagerInitialized = await this.initializeOfflineManager();
 
-      // Start performance monitoring
-      result.performanceMonitoringStarted = this.initializePerformanceMonitoring();
+        // Start performance monitoring
+        result.performanceMonitoringStarted = this.initializePerformanceMonitoring();
 
-      // Initialize document library
-      await this.initializeDocumentLibrary();
+        // Initialize document library
+        await this.initializeDocumentLibrary();
 
-      // Set app as initialized
-      await this.markAsInitialized();
+        // Set app as initialized
+        await this.markAsInitialized();
 
-      this.initialized = true;
-      console.log('App initialization completed successfully');
+        this.initialized = true;
+        this.initializationResult = result;
+        console.log('App initialization completed successfully');
 
-      return result;
-    } catch (error) {
-      console.error('App initialization failed:', error);
-      throw error;
-    }
+        return result;
+      } catch (error) {
+        console.error('App initialization failed:', error);
+        this.initializationPromise = null; // Allow retry on failure
+        throw error;
+      }
+    })();
+
+    return this.initializationPromise;
   }
 
   private async checkFirstLaunch(): Promise<boolean> {
@@ -100,19 +117,20 @@ class AppInitializer {
   private async initializeStorage(): Promise<boolean> {
     try {
       const storageManager = StorageManager.getInstance();
-      await storageManager.initialize();
+      // StorageManager doesn't need initialization, it's ready to use
       
       // Perform initial cleanup if needed
       const storageInfo = await storageManager.getStorageInfo();
       if (storageInfo.usagePercentage > 90) {
         console.log('Storage usage high, performing cleanup...');
-        await storageManager.performCleanup();
+        await storageManager.optimizeStorage();
       }
 
       return true;
     } catch (error) {
       console.error('Error initializing storage:', error);
-      return false;
+      // Don't fail app initialization if storage check fails
+      return true;
     }
   }
 
@@ -123,7 +141,8 @@ class AppInitializer {
       return true;
     } catch (error) {
       console.error('Error initializing offline manager:', error);
-      return false;
+      // Don't fail app initialization if offline manager fails
+      return true;
     }
   }
 

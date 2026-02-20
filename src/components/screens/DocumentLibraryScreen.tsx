@@ -16,10 +16,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
 import { DocumentPickerUtils } from '../../utils/DocumentPickerUtils';
 import { DebugUtils } from '../../utils/DebugUtils';
+import { DocumentLibrary } from '../../modules/document-library';
+import { DocumentMetadata } from '../../types';
 
 const { width } = Dimensions.get('window');
 const ITEM_WIDTH = (width - 60) / 2; // 2 columns with padding
@@ -94,13 +96,29 @@ export const DocumentLibraryScreen: React.FC = () => {
   const [showRenameModal, setShowRenameModal] = useState(false);
   const [newFileName, setNewFileName] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  
+  // Create DocumentLibrary instance
+  const documentLibrary = new DocumentLibrary();
 
   const loadDocuments = useCallback(async () => {
     try {
       setLoading(true);
-      // For now, just set empty array - this will be enhanced later
-      setDocuments([]);
-      setFilteredDocuments([]);
+      // Load documents from DocumentLibrary
+      const loadedDocs = await documentLibrary.getDocuments();
+      
+      // Convert DocumentMetadata to SimpleDocumentMetadata format
+      const simpleDocs: SimpleDocumentMetadata[] = loadedDocs.map(doc => ({
+        id: doc.id,
+        fileName: doc.fileName,
+        filePath: doc.filePath,
+        fileSize: doc.fileSize,
+        pageCount: doc.pageCount,
+        createdAt: doc.createdAt,
+        modifiedAt: doc.modifiedAt,
+      }));
+      
+      setDocuments(simpleDocs);
+      setFilteredDocuments(simpleDocs);
     } catch (error) {
       console.error('Error loading documents:', error);
       Alert.alert('Error', 'Failed to load documents');
@@ -163,10 +181,15 @@ export const DocumentLibraryScreen: React.FC = () => {
         mimeType: result.mimeType
       });
 
-      // Get documents directory
-      const documentsDir = FileSystem.documentDirectory;
+      // Get documents directory - use cacheDirectory as fallback
+      let documentsDir = FileSystem.documentDirectory;
       if (!documentsDir) {
-        throw new Error('Documents directory not available');
+        console.warn('documentDirectory not available, using cacheDirectory');
+        documentsDir = FileSystem.cacheDirectory;
+      }
+      
+      if (!documentsDir) {
+        throw new Error('No writable directory available');
       }
 
       // Create a unique filename to avoid conflicts
@@ -212,7 +235,7 @@ export const DocumentLibraryScreen: React.FC = () => {
           // Fallback: read file to get size
           try {
             const fileContent = await FileSystem.readAsStringAsync(filePath, {
-              encoding: FileSystem.EncodingType.Base64,
+              encoding: 'base64' as any, // Use string literal for Expo Go compatibility
             });
             fileSize = Math.round((fileContent.length * 3) / 4); // Approximate size from base64
           } catch {
@@ -222,8 +245,8 @@ export const DocumentLibraryScreen: React.FC = () => {
         
         console.log('Final file size:', fileSize);
         
-        // Create document metadata
-        const metadata: SimpleDocumentMetadata = {
+        // Create document metadata with all required fields
+        const metadata: DocumentMetadata = {
           id: `doc_${timestamp}`,
           fileName: uniqueFileName,
           filePath: filePath,
@@ -231,12 +254,17 @@ export const DocumentLibraryScreen: React.FC = () => {
           pageCount: 1, // Default to 1 page for now - this could be enhanced with PDF parsing
           createdAt: new Date(),
           modifiedAt: new Date(),
+          tags: [],
+          category: 'uncategorized',
         };
 
         console.log('Created metadata:', metadata);
 
-        // Add to documents list
-        setDocuments(prev => [metadata, ...prev]);
+        // Save to DocumentLibrary (persistent storage)
+        await documentLibrary.addDocument(filePath, metadata);
+        
+        // Reload documents from storage
+        await loadDocuments();
 
         // Provide haptic feedback and success message
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -297,12 +325,15 @@ export const DocumentLibraryScreen: React.FC = () => {
         to: newPath
       });
 
-      // Update documents list
-      setDocuments(prev => prev.map(doc => 
-        doc.id === selectedDocument.id 
-          ? { ...doc, fileName: newFullName, filePath: newPath, modifiedAt: new Date() }
-          : doc
-      ));
+      // Update DocumentLibrary with new file path and name
+      await documentLibrary.updateDocument(selectedDocument.id, {
+        fileName: newFullName,
+        filePath: newPath,
+        modifiedAt: new Date()
+      });
+      
+      // Reload documents from storage
+      await loadDocuments();
 
       setShowRenameModal(false);
       setNewFileName('');
@@ -328,8 +359,15 @@ export const DocumentLibraryScreen: React.FC = () => {
           style: 'destructive',
           onPress: async () => {
             try {
+              // Delete file from filesystem
               await FileSystem.deleteAsync(selectedDocument.filePath);
-              setDocuments(prev => prev.filter(doc => doc.id !== selectedDocument.id));
+              
+              // Remove from DocumentLibrary
+              await documentLibrary.removeDocument(selectedDocument.id);
+              
+              // Reload documents from storage
+              await loadDocuments();
+              
               setShowContextMenu(false);
               setSelectedDocument(null);
 

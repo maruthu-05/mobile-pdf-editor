@@ -1,5 +1,6 @@
 import * as DocumentPicker from 'expo-document-picker';
 import { Platform, Alert } from 'react-native';
+import { ExpoGoFilePickerFallback } from './ExpoGoFilePickerFallback';
 
 export interface DocumentPickerResult {
   success: boolean;
@@ -33,6 +34,29 @@ export class DocumentPickerUtils {
           success: false,
           error: 'Document picker is not available on this platform'
         };
+      }
+
+      // Check if we're in Expo Go and show appropriate options
+      if (ExpoGoFilePickerFallback.isExpoGo()) {
+        console.log('Detected Expo Go environment, using fallback options...');
+        
+        // Show Expo Go specific options
+        const result = await ExpoGoFilePickerFallback.showExpoGoOptions();
+        
+        if (result.success) {
+          // Validate the file if it's not our sample PDF
+          if (result.name && !result.name.startsWith('sample_')) {
+            const validation = this.validatePDFFile(result.name, 'application/pdf');
+            if (!validation.isValid) {
+              return {
+                success: false,
+                error: validation.error
+              };
+            }
+          }
+        }
+        
+        return result;
       }
 
       console.log('Starting document picker...');

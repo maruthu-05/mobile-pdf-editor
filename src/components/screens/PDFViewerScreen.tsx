@@ -12,16 +12,22 @@ import {
   TextInput,
   PanResponder,
   Animated,
+  ActionSheetIOS,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
+import * as MediaLibrary from 'expo-media-library';
 import { GestureHandlerRootView, PinchGestureHandler, State } from 'react-native-gesture-handler';
 
 import { PDFEngine } from '../../modules/pdf-engine';
 import { ImageData, Annotation, TextEdit, DocumentMetadata } from '../../types';
+import { DocumentLibrary } from '../../modules/document-library';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
@@ -56,6 +62,9 @@ export const PDFViewerScreen: React.FC<PDFViewerScreenProps> = ({
   const [showAnnotationModal, setShowAnnotationModal] = useState(false);
   const [annotationText, setAnnotationText] = useState('');
   const [pendingAnnotation, setPendingAnnotation] = useState<Partial<Annotation> | null>(null);
+  const [showActionMenu, setShowActionMenu] = useState(false);
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [newFileName, setNewFileName] = useState(document.fileName.replace('.pdf', ''));
 
   // Zoom and pan state
   const [scale, setScale] = useState(1);
@@ -282,6 +291,137 @@ export const PDFViewerScreen: React.FC<PDFViewerScreenProps> = ({
     setSelectedTool(tool);
   };
 
+  // Action menu handlers
+  const handleActionMenuOpen = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setShowActionMenu(true);
+  };
+
+  const handleDownload = async () => {
+    try {
+      setShowActionMenu(false);
+      
+      // Request permissions
+      const { status } = await MediaLibrary.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please grant permission to save files to your device.');
+        return;
+      }
+
+      // Show loading
+      Alert.alert('Downloading', 'Saving PDF to your device...');
+      
+      // Save to media library
+      const asset = await MediaLibrary.createAssetAsync(document.filePath);
+      await MediaLibrary.createAlbumAsync('PDFs', asset, false);
+      
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Success', 'PDF has been downloaded to your device!');
+    } catch (error) {
+      console.error('Download error:', error);
+      Alert.alert('Error', 'Failed to download the PDF. Please try again.');
+    }
+  };
+
+  const handleShare = async () => {
+    try {
+      setShowActionMenu(false);
+      
+      const isAvailable = await Sharing.isAvailableAsync();
+      if (!isAvailable) {
+        Alert.alert('Error', 'Sharing is not available on this device.');
+        return;
+      }
+
+      await Sharing.shareAsync(document.filePath, {
+        mimeType: 'application/pdf',
+        dialogTitle: 'Share PDF',
+        UTI: 'com.adobe.pdf',
+      });
+      
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error) {
+      console.error('Share error:', error);
+      Alert.alert('Error', 'Failed to share the PDF. Please try again.');
+    }
+  };
+
+  const handleRename = () => {
+    setShowActionMenu(false);
+    setShowRenameModal(true);
+  };
+
+  const confirmRename = async () => {
+    if (!newFileName.trim()) {
+      Alert.alert('Error', 'Please enter a valid file name.');
+      return;
+    }
+
+    try {
+      const documentLibrary = new DocumentLibrary();
+      const newFullName = `${newFileName.trim()}.pdf`;
+      const directory = document.filePath.substring(0, document.filePath.lastIndexOf('/') + 1);
+      const newPath = `${directory}${newFullName}`;
+
+      // Rename file
+      await FileSystem.moveAsync({
+        from: document.filePath,
+        to: newPath
+      });
+
+      // Update DocumentLibrary
+      await documentLibrary.updateDocument(document.id, {
+        fileName: newFullName,
+        filePath: newPath,
+        modifiedAt: new Date()
+      });
+
+      setShowRenameModal(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Success', 'File renamed successfully!', [
+        { text: 'OK', onPress: () => router.back() }
+      ]);
+    } catch (error) {
+      console.error('Rename error:', error);
+      Alert.alert('Error', 'Failed to rename the file. Please try again.');
+    }
+  };
+
+  const handleDelete = () => {
+    setShowActionMenu(false);
+    
+    Alert.alert(
+      'Delete PDF',
+      `Are you sure you want to delete "${document.fileName}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const documentLibrary = new DocumentLibrary();
+              
+              // Delete file from filesystem
+              await FileSystem.deleteAsync(document.filePath);
+              
+              // Remove from DocumentLibrary
+              await documentLibrary.removeDocument(document.id);
+              
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert('Success', 'PDF deleted successfully.', [
+                { text: 'OK', onPress: () => router.push('/') }
+              ]);
+            } catch (error) {
+              console.error('Delete error:', error);
+              Alert.alert('Error', 'Failed to delete the PDF. Please try again.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   // Render page component
   const renderPage = (pageNumber: number) => {
     const imageData = pageImages.get(pageNumber);
@@ -397,6 +537,10 @@ export const PDFViewerScreen: React.FC<PDFViewerScreenProps> = ({
                   size={24} 
                   color={editingMode ? "#FF3B30" : "white"} 
                 />
+              </TouchableOpacity>
+              
+              <TouchableOpacity onPress={handleActionMenuOpen} style={styles.toolbarButton}>
+                <Ionicons name="checkmark-circle" size={28} color="#4CD964" />
               </TouchableOpacity>
             </View>
           </Animated.View>
@@ -524,6 +668,86 @@ export const PDFViewerScreen: React.FC<PDFViewerScreenProps> = ({
                   onPress={confirmTextAnnotation}
                 >
                   <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Add</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Action Menu Modal */}
+        <Modal
+          visible={showActionMenu}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowActionMenu(false)}
+        >
+          <TouchableOpacity 
+            style={styles.modalOverlay} 
+            activeOpacity={1}
+            onPress={() => setShowActionMenu(false)}
+          >
+            <View style={styles.actionMenu}>
+              <Text style={styles.actionMenuTitle}>What would you like to do?</Text>
+              
+              <TouchableOpacity style={styles.actionMenuItem} onPress={handleDownload}>
+                <Ionicons name="download-outline" size={24} color="#007AFF" />
+                <Text style={styles.actionMenuText}>Download to Device</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity style={styles.actionMenuItem} onPress={handleShare}>
+                <Ionicons name="share-outline" size={24} color="#007AFF" />
+                <Text style={styles.actionMenuText}>Share PDF</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity style={styles.actionMenuItem} onPress={handleRename}>
+                <Ionicons name="create-outline" size={24} color="#007AFF" />
+                <Text style={styles.actionMenuText}>Rename File</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity style={styles.actionMenuItem} onPress={handleDelete}>
+                <Ionicons name="trash-outline" size={24} color="#FF3B30" />
+                <Text style={[styles.actionMenuText, { color: '#FF3B30' }]}>Delete PDF</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={[styles.actionMenuItem, styles.cancelMenuItem]} 
+                onPress={() => setShowActionMenu(false)}
+              >
+                <Text style={styles.cancelMenuText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
+        {/* Rename Modal */}
+        <Modal
+          visible={showRenameModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowRenameModal(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.annotationModal}>
+              <Text style={styles.modalTitle}>Rename File</Text>
+              <TextInput
+                style={styles.textInput}
+                value={newFileName}
+                onChangeText={setNewFileName}
+                placeholder="Enter new file name..."
+                autoFocus
+              />
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={styles.modalButton}
+                  onPress={() => setShowRenameModal(false)}
+                >
+                  <Text style={styles.modalButtonText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modalButton, styles.primaryButton]}
+                  onPress={confirmRename}
+                >
+                  <Text style={[styles.modalButtonText, styles.primaryButtonText]}>Rename</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -821,5 +1045,50 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     color: 'white',
+  },
+  actionMenu: {
+    backgroundColor: 'white',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+  },
+  actionMenuTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    marginBottom: 20,
+    textAlign: 'center',
+    color: '#333',
+  },
+  actionMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    backgroundColor: '#f9f9f9',
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  actionMenuText: {
+    fontSize: 16,
+    fontWeight: '500',
+    marginLeft: 16,
+    color: '#007AFF',
+  },
+  cancelMenuItem: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#ddd',
+    marginTop: 8,
+  },
+  cancelMenuText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#666',
+    textAlign: 'center',
+    flex: 1,
   },
 });

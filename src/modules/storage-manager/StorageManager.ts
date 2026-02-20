@@ -1,5 +1,6 @@
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 import { 
   StorageManager as IStorageManager, 
   StorageInfo, 
@@ -20,6 +21,7 @@ export class StorageManager implements IStorageManager {
   private readonly STORAGE_SETTINGS_KEY = 'storage_settings';
   private readonly APP_DIRECTORY = FileSystem.documentDirectory!;
   private readonly TEMP_DIRECTORY = FileSystem.cacheDirectory!;
+  private readonly isWeb = Platform.OS === 'web';
   
   private constructor() {}
 
@@ -31,6 +33,17 @@ export class StorageManager implements IStorageManager {
   }
 
   async getStorageInfo(): Promise<StorageInfo> {
+    // Web doesn't support FileSystem storage operations
+    if (this.isWeb) {
+      return {
+        totalSpace: 0,
+        freeSpace: 0,
+        usedSpace: 0,
+        appUsedSpace: 0,
+        usagePercentage: 0,
+      };
+    }
+
     try {
       const freeSpace = await FileSystem.getFreeDiskStorageAsync();
       const totalSpace = await FileSystem.getTotalDiskCapacityAsync();
@@ -46,11 +59,23 @@ export class StorageManager implements IStorageManager {
         usagePercentage,
       };
     } catch (error) {
-      throw new Error(`Failed to get storage info: ${error}`);
+      console.warn('Failed to get storage info:', error);
+      // Return default values on error
+      return {
+        totalSpace: 0,
+        freeSpace: 0,
+        usedSpace: 0,
+        appUsedSpace: 0,
+        usagePercentage: 0,
+      };
     }
   }
 
   async monitorStorage(): Promise<void> {
+    if (this.isWeb) {
+      return; // Skip storage monitoring on web
+    }
+
     const storageInfo = await this.getStorageInfo();
     const settings = await this.getStorageSettings();
     

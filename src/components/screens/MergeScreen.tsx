@@ -9,14 +9,19 @@ import {
   ActivityIndicator,
   Image,
   Dimensions,
+  Modal,
 } from 'react-native';
 import { Button, CheckBox } from 'react-native-elements';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
+import * as MediaLibrary from 'expo-media-library';
 import { DocumentLibrary } from '../../modules/document-library';
 import { PDFEngine } from '../../modules/pdf-engine';
 import { DocumentMetadata } from '../../types';
+import { DocumentPickerUtils } from '../../utils/DocumentPickerUtils';
 
 interface MergeScreenProps {
   onMergeComplete?: (mergedFilePath: string) => void;
@@ -38,6 +43,8 @@ export const MergeScreen: React.FC<MergeScreenProps> = ({
   const [mergeProgress, setMergeProgress] = useState(0);
   const [mergeMessage, setMergeMessage] = useState('');
   const [selectedCount, setSelectedCount] = useState(0);
+  const [mergedDocumentId, setMergedDocumentId] = useState<string | null>(null);
+  const [showActionMenu, setShowActionMenu] = useState(false);
 
   const documentLibrary = new DocumentLibrary();
   const pdfEngine = new PDFEngine();
@@ -50,9 +57,9 @@ export const MergeScreen: React.FC<MergeScreenProps> = ({
     };
   }, []);
 
-  // Load documents on component mount
+  // Load documents on component mount - start with file picker
   useEffect(() => {
-    loadDocuments();
+    pickFilesForMerge();
   }, []);
 
   const loadDocuments = async () => {
@@ -173,6 +180,107 @@ export const MergeScreen: React.FC<MergeScreenProps> = ({
     setSelectedCount(documents.length);
   }, [documents.length]);
 
+  // New function to pick files using document picker
+  const pickFilesForMerge = async () => {
+    const pickedDocs: SelectableDocument[] = [];
+    let continueAdding = true;
+    
+    while (continueAdding) {
+      try {
+        if (!DocumentPickerUtils.isAvailable()) {
+          Alert.alert('Error', 'File picker is not available on this platform.');
+          router.back();
+          return;
+        }
+
+        const result = await DocumentPickerUtils.pickPDFDocument();
+        
+        if (!result.success) {
+          // User canceled or error occurred
+          if (pickedDocs.length === 0) {
+            // No files selected yet, go back
+            router.back();
+            return;
+          }
+          break; // Stop adding more files
+        }
+
+        if (!result.uri) {
+          Alert.alert('Error', 'Invalid file selected.');
+          continue;
+        }
+
+        // Copy file to app storage
+        const documentsDir = FileSystem.documentDirectory || FileSystem.cacheDirectory;
+        if (!documentsDir) {
+          throw new Error('No writable directory available');
+        }
+
+        const timestamp = Date.now();
+        const fileName = result.name || `document_${timestamp}.pdf`;
+        const uniqueFileName = `${timestamp}_${fileName}`;
+        const filePath = `${documentsDir}${uniqueFileName}`;
+
+        await FileSystem.copyAsync({
+          from: result.uri,
+          to: filePath
+        });
+
+        // Create document metadata
+        const docMetadata: SelectableDocument = {
+          id: `temp_${timestamp}`,
+          fileName: uniqueFileName,
+          filePath: filePath,
+          fileSize: result.size || 0,
+          pageCount: 1,
+          createdAt: new Date(),
+          modifiedAt: new Date(),
+          tags: [],
+          category: 'uncategorized',
+          selected: true,
+          position: pickedDocs.length,
+        };
+
+        pickedDocs.push(docMetadata);
+        setDocuments([...pickedDocs]);
+        setSelectedCount(pickedDocs.length);
+
+        // Ask if user wants to add more files
+        const addMore = await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            'Add More Files?',
+            `${pickedDocs.length} file${pickedDocs.length !== 1 ? 's' : ''} selected. Do you want to add another PDF?`,
+            [
+              { text: 'No, Continue', onPress: () => resolve(false) },
+              { text: 'Yes, Add More', onPress: () => resolve(true) },
+            ]
+          );
+        });
+
+        if (!addMore) {
+          break;
+        }
+
+      } catch (error) {
+        console.error('Error picking file:', error);
+        Alert.alert('Error', 'Failed to select file. Please try again.');
+        break;
+      }
+    }
+
+    if (pickedDocs.length < 2) {
+      Alert.alert(
+        'Insufficient Files',
+        'At least 2 PDF files are required to merge. Please select more files.',
+        [{ text: 'OK', onPress: () => router.back() }]
+      );
+      return;
+    }
+
+    setLoading(false);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
   const handleMerge = async () => {
     const selectedDocs = documents.filter(doc => doc.selected);
     
@@ -204,40 +312,38 @@ export const MergeScreen: React.FC<MergeScreenProps> = ({
       // Perform the merge operation
       const mergedFilePath = await pdfEngine.mergePDFs(filePaths);
 
+      // Get file info to determine size
+      const fileInfo = await FileSystem.getInfoAsync(mergedFilePath);
+      const fileSize = fileInfo.exists && 'size' in fileInfo ? fileInfo.size : 0;
+
       // Add merged document to library
       const mergedFileName = `Merged_${new Date().toISOString().slice(0, 10)}.pdf`;
+      const documentId = `merged_${Date.now()}`;
       const mergedMetadata: DocumentMetadata = {
-        id: `merged_${Date.now()}`,
+        id: documentId,
         fileName: mergedFileName,
         filePath: mergedFilePath,
-        fileSize: 0, // Will be updated by file system
+        fileSize: fileSize,
         pageCount: selectedDocs.reduce((sum, doc) => sum + doc.pageCount, 0),
         createdAt: new Date(),
         modifiedAt: new Date(),
+        tags: [],
+        category: 'uncategorized',
       };
 
       await documentLibrary.addDocument(mergedFilePath, mergedMetadata);
 
-      // Show success message
-      Alert.alert(
-        'Merge Complete',
-        `Successfully merged ${selectedDocs.length} PDF files into "${mergedFileName}".`,
-        [
-          {
-            text: 'OK',
-            onPress: () => {
-              onMergeComplete?.(mergedFilePath);
-              router.back();
-            },
-          },
-        ]
-      );
+      // Set merged document ID and show action menu
+      setMergedDocumentId(documentId);
+      setMerging(false);
+      setShowActionMenu(true);
 
       // Provide success haptic feedback
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     } catch (error) {
       console.error('Merge failed:', error);
+      setMerging(false);
       Alert.alert(
         'Merge Failed',
         error instanceof Error ? error.message : 'An unknown error occurred during merge.'
@@ -250,6 +356,84 @@ export const MergeScreen: React.FC<MergeScreenProps> = ({
       setMergeProgress(0);
       setMergeMessage('');
     }
+  };
+
+  // Action menu handlers for merged PDF
+  const handleDownloadMerged = async () => {
+    if (!mergedDocumentId) return;
+
+    try {
+      setShowActionMenu(false);
+      
+      const { status } = await MediaLibrary.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please grant permission to save files to your device.');
+        return;
+      }
+
+      const docs = await documentLibrary.getDocuments();
+      const mergedDoc = docs.find(d => d.id === mergedDocumentId);
+      if (!mergedDoc) {
+        Alert.alert('Error', 'Merged document not found.');
+        return;
+      }
+
+      Alert.alert('Downloading', 'Saving PDF to your device...');
+      
+      const asset = await MediaLibrary.createAssetAsync(mergedDoc.filePath);
+      await MediaLibrary.createAlbumAsync('PDFs', asset, false);
+      
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Success', 'PDF has been downloaded to your device!', [
+        { text: 'OK', onPress: () => router.push('/') }
+      ]);
+    } catch (error) {
+      console.error('Download error:', error);
+      Alert.alert('Error', 'Failed to download the PDF.');
+    }
+  };
+
+  const handleShareMerged = async () => {
+    if (!mergedDocumentId) return;
+
+    try {
+      setShowActionMenu(false);
+      
+      const isAvailable = await Sharing.isAvailableAsync();
+      if (!isAvailable) {
+        Alert.alert('Error', 'Sharing is not available on this device.');
+        return;
+      }
+
+      const docs = await documentLibrary.getDocuments();
+      const mergedDoc = docs.find(d => d.id === mergedDocumentId);
+      if (!mergedDoc) {
+        Alert.alert('Error', 'Merged document not found.');
+        return;
+      }
+
+      await Sharing.shareAsync(mergedDoc.filePath, {
+        mimeType: 'application/pdf',
+        dialogTitle: 'Share Merged PDF',
+        UTI: 'com.adobe.pdf',
+      });
+      
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error) {
+      console.error('Share error:', error);
+      Alert.alert('Error', 'Failed to share the PDF.');
+    }
+  };
+
+  const handleViewMerged = () => {
+    if (!mergedDocumentId) return;
+    setShowActionMenu(false);
+    router.push(`/pdf-viewer/${mergedDocumentId}`);
+  };
+
+  const handleDone = () => {
+    setShowActionMenu(false);
+    router.push('/');
   };
 
   const renderDocumentItem = ({ item, index }: { item: SelectableDocument; index: number }) => {
@@ -425,6 +609,44 @@ export const MergeScreen: React.FC<MergeScreenProps> = ({
           loading={merging}
         />
       </View>
+
+      {/* Action Menu Modal for Merged PDF */}
+      <Modal
+        visible={showActionMenu}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {}}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.actionMenu}>
+            <Ionicons name="checkmark-circle" size={64} color="#4CD964" />
+            <Text style={styles.successTitle}>Merge Complete!</Text>
+            <Text style={styles.successMessage}>Your PDFs have been successfully merged.</Text>
+            
+            <TouchableOpacity style={styles.actionMenuItem} onPress={handleViewMerged}>
+              <Ionicons name="eye-outline" size={24} color="#007AFF" />
+              <Text style={styles.actionMenuText}>View Merged PDF</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity style={styles.actionMenuItem} onPress={handleDownloadMerged}>
+              <Ionicons name="download-outline" size={24} color="#007AFF" />
+              <Text style={styles.actionMenuText}>Download to Device</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity style={styles.actionMenuItem} onPress={handleShareMerged}>
+              <Ionicons name="share-outline" size={24} color="#007AFF" />
+              <Text style={styles.actionMenuText}>Share PDF</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={[styles.actionMenuItem, styles.doneMenuItem]} 
+              onPress={handleDone}
+            >
+              <Text style={styles.doneMenuText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -648,5 +870,58 @@ const styles = StyleSheet.create({
   mergeButtonText: {
     fontSize: 16,
     fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  actionMenu: {
+    backgroundColor: 'white',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 30,
+    alignItems: 'center',
+  },
+  successTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginTop: 16,
+    marginBottom: 8,
+    color: '#333',
+  },
+  successMessage: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 30,
+  },
+  actionMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    backgroundColor: '#f9f9f9',
+    borderRadius: 12,
+    marginBottom: 12,
+    width: '100%',
+  },
+  actionMenuText: {
+    fontSize: 16,
+    fontWeight: '500',
+    marginLeft: 16,
+    color: '#007AFF',
+  },
+  doneMenuItem: {
+    backgroundColor: '#007AFF',
+    marginTop: 8,
+    justifyContent: 'center',
+  },
+  doneMenuText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#fff',
+    textAlign: 'center',
+    flex: 1,
   },
 });
